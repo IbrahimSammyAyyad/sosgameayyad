@@ -1,9 +1,9 @@
 import tkinter as tk
 from tkinter import messagebox
-import openai
 import random
+import openai
+import os
 
-openai.api_key = "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"
 
 class Team:
     def __init__(self, name, color, is_computer=False):
@@ -11,8 +11,6 @@ class Team:
         self.color = color
         self.score = 0
         self.is_computer = is_computer
-
-
 
 
 class Square:
@@ -52,14 +50,17 @@ class Board:
             square.state = "empty"
             square.button.config(text="")
 
+
 class Game:
     def __init__(self, root):
         self.root = root
         self.root.title("SOS Game - Save vs Souls")
-        
+
+        self.game_log = []  # To store moves for recording
+        self.log_file_path = "sos_game_log.txt"  # Default log file path
+
         self.team_save = Team("Red", "red")
         self.team_souls = Team("Blue", "blue")
-
         self.current_team = self.team_save
 
         self.game_mode = "simple"
@@ -72,122 +73,202 @@ class Game:
 
 
     def make_computer_move(self):
-        board_state = self.get_board_state()
-        n = self.board_size  # The size of the board
+        """
+        Handles the computer's turn, makes one move, and switches control.
+        """
+        # Find all empty squares
+        empty_squares = [(row, col) for (row, col), square in self.board.squares.items() if square.state == "empty"]
 
-        prompt = (
-            f"Given this SOS board state that is a MATRIX i.e. a square, starting at the top left square:\n{board_state}\n"
-            f"Choose the best move for {self.current_team.name} by providing a row, column, "
-            f"and either 'S' or 'O' based on the board state. Only select row and column numbers between 0 and {n-1} "
-            f"as to avoid going over the playable area. Also, you can only select a square that is currently empty.\n"
-            f"Respond in the format: row, column, letter (e.g., '2, 3, S' or '2, 3, O')."
-        )
+        # No available moves, end the game
+        if not empty_squares:
+            self.status_label.config(text="No moves available. Game Over!")
+            self.end_game(f"{self.get_winner()} wins! Final Scores - Save: {self.team_save.score}, Souls: {self.team_souls.score}")
+            return
 
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an assistant playing the SOS game strategically."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            move_text = response['choices'][0]['message']['content'].strip()
-            move = move_text.split(",")
+        # Select a strategic or random move
+        row, col = self.choose_best_move()
+        selected_letter = self.choose_best_letter(row, col)
 
-            if len(move) == 3:
-                row, col, letter = int(move[0].strip()), int(move[1].strip()), move[2].strip().upper()
-                
-                # Validate the move: check bounds, letter, and if the square is empty
-                if (
-                    0 <= row < n and 0 <= col < n and  # within bounds
-                    letter in ['S', 'O'] and  # valid letter
-                    self.board.get_square(row, col).state == "empty"  # empty square
-                ):
-                    self.letter_choice.set(letter)  # Set the chosen letter for the computer
-                    self.handle_move(row, col)
-                else:
-                    print("GPT chose an invalid move (out-of-bounds, occupied square, or incorrect letter). Choosing a random valid move.")
-                    self.random_move()  # Fallback if GPT chooses an invalid move
-            else:
-                print("GPT did not respond with the correct format. Choosing a random move as a fallback.")
-                self.random_move()  # Fallback if GPT returns an invalid format
-        except Exception as e:
-            print(f"Error with GPT: {e}")
-            self.random_move()
+        # Set the letter and play the move
+        self.letter_choice.set(selected_letter)
+        self.handle_move(row, col)
+
+        # Check for game-end conditions
+        if self.check_game_end_conditions():
+            return
+
+        # Relinquish control and switch turn to the other team
+        self.switch_turn()
 
 
 
+    def choose_best_move(self):
+        """
+        Intelligent move selection for the computer to prioritize scoring opportunities.
+        Defaults to a random move if no strategic moves are found.
+        """
+        for (row, col), square in self.board.squares.items():
+            if square.state == "empty":
+                # Simulate placing an "S" or "O" and evaluate potential SOS
+                if self.is_potential_sos(row, col, "S") or self.is_potential_sos(row, col, "O"):
+                    return row, col
+        # If no strategic move, pick a random empty square
+        empty_squares = [(row, col) for (row, col), square in self.board.squares.items() if square.state == "empty"]
+        return random.choice(empty_squares)
 
 
 
+    def choose_best_letter(self, row, col):
+        """
+        Intelligent letter selection for maximizing the chance of scoring SOS.
+        """
+        if self.is_potential_sos(row, col, "S"):
+            return "S"
+        elif self.is_potential_sos(row, col, "O"):
+            return "O"
+        return random.choice(["S", "O"])  # Fallback to random if no clear choice
 
 
+    def is_potential_sos(self, row, col, letter):
+        """
+        Determines if placing a specific letter at (row, col) creates an SOS.
+        """
+        # Simulate the placement and check all directions
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1)
+        ]
+        for drow, dcol in directions:
+            if letter == "S" and self.get_letter_at(row + drow, col + dcol) == "O" and self.get_letter_at(row + 2 * drow, col + 2 * dcol) == "S":
+                return True
+            if letter == "O" and self.get_letter_at(row - drow, col - dcol) == "S" and self.get_letter_at(row + drow, col + dcol) == "S":
+                return True
+        return False
 
 
+    def check_game_end_conditions(self):
+        """
+        Checks if the game has reached an end state and handles it.
+        """
+        if self.game_mode == "simple" and self.current_team.score > 0:
+            self.end_game(f"{self.current_team.name} wins by creating an SOS!")
+            return True
 
+        if self.game_mode == "general":
+            empty_squares = [sq for sq in self.board.squares.values() if sq.state == "empty"]
+            if not empty_squares:
+                winner = self.get_winner()
+                self.end_game(f"Game Over! {winner} wins! Final Scores - Save: {self.team_save.score}, Souls: {self.team_souls.score}")
+                return True
 
+        return False
 
-
-    def get_board_state(self):
-        state = ""
-        for row in range(self.board_size):
-            for col in range(self.board_size):
-                square = self.board.get_square(row, col)
-                state += square.button["text"] if square.button["text"] else "."
-            state += "\n"
-        return state
-    
-
+         
     def handle_move(self, row, col):
+        """
+        Processes a move by the current team and updates the board state.
+        """
         square = self.board.get_square(row, col)
+
+        if square.state == "full":
+            self.status_label.config(text=f"Square ({row}, {col}) is already full")
+            return
+
         selected_letter = self.letter_choice.get()
         message = square.mark(selected_letter, self.current_team)
         self.status_label.config(text=message)
 
+        # Add move to game log
+        self.game_log.append(f"{self.current_team.name},{row},{col},{selected_letter}")
+
+        # Check SOS and update score
         score = self.check_sos(row, col, selected_letter)
-        if score:
+        if score > 0:
             self.current_team.score += score
             self.status_label.config(text=f"{self.current_team.name} scored! {self.current_team.score} points")
-            
-            # Simple mode: End the game if an SOS is formed
-            if self.game_mode == "simple" and score > 0:
-                self.end_game(f"{self.current_team.name} wins by making an SOS!")
-                return
 
-        # If the board is full in general mode, determine the winner by score
-        if self.game_mode == "general" and not any(sq.state == "empty" for sq in self.board.squares.values()):
-            winner = self.get_winner()
-            self.end_game(f"{winner} wins with Save: {self.team_save.score}, Souls: {self.team_souls.score}!")
+
+
+    def save_game_log(self):
+        try:
+            # Save metadata as the first lines in the log
+            metadata = f"Mode:{self.game_mode}\nSize:{self.board_size}"
+            with open(self.log_file_path, 'w') as log_file:
+                log_file.write(metadata + "\n")
+                log_file.write("\n".join(self.game_log))
+            messagebox.showinfo("Game Log Saved", "The game log has been saved successfully!")
+        except IOError as e:
+            messagebox.showerror("Save Error", f"Failed to save the game log: {e}")
+
+
+    def load_game_log(self):
+        try:
+            if os.path.exists(self.log_file_path):
+                with open(self.log_file_path, 'r') as log_file:
+                    lines = log_file.readlines()
+                    # Extract metadata
+                    metadata = lines[:2]  # First two lines are metadata
+                    game_log = lines[2:]  # Remaining lines are moves
+                    self.game_mode = metadata[0].strip().split(":")[1]
+                    self.board_size = int(metadata[1].strip().split(":")[1])
+                    return game_log
+            else:
+                return []
+        except IOError as e:
+            print(f"Error loading game log: {e}")
+            return []
+
+
+    def replay_game(self):
+        log = self.load_game_log()
+        if not log:
+            messagebox.showinfo("Replay", "No game log available for replay.")
+            return
+
+        def make_move_from_log(index):
+            if index < len(log):
+                move = log[index].strip().split(",")
+                team_name, row, col, letter = move
+                row, col = int(row), int(col)
+                self.letter_choice.set(letter)
+                self.current_team = self.team_save if team_name == self.team_save.name else self.team_souls
+                self.handle_move(row, col)
+                self.root.after(1000, lambda: make_move_from_log(index + 1))
+
+        # Reset the game with the loaded metadata
+        self.board_size = self.board_size  # Already set in `load_game_log`
+        self.game_mode = self.game_mode   # Already set in `load_game_log`
+        self.start_new_game()  # Initialize a new game with the correct settings
+        make_move_from_log(0)
+
+
+
+    def end_game(self, message):
+        messagebox.showinfo("Game Over", message)
+        save_log = messagebox.askyesno("Save Game Log", "Do you want to save the game log?")
+        if save_log:
+            self.save_game_log()
         else:
-            self.switch_turn()
+            self.game_log = []
+            messagebox.showinfo("Game Log Discarded", "The game log has been discarded.")
+        self.start_new_game()
 
-
-
-
-    def switch_turn(self):
-        self.current_team = self.team_souls if self.current_team == self.team_save else self.team_save
+    def reset_game(self):
+        self.board.reset_board()
+        self.current_team = self.team_save
+        self.team_save.score = 0
+        self.team_souls.score = 0
+        self.game_log = []  # Clear the log when a new game starts
+        self.status_label.config(text="New game started.")
         self.turn_label.config(text=f"Current turn: {self.current_team.name}")
-
-        if self.current_team.is_computer:
-            self.make_computer_move()
-
-
-
-
-    def random_move(self):
-        empty_squares = [(row, col) for (row, col), square in self.board.squares.items() if square.state == "empty"]
-        if empty_squares:
-            row, col = random.choice(empty_squares)
-            self.handle_move(row, col)
-
-
-
-
 
     def setup_ui(self):
         tk.Label(self.root, text="Choose letter:").grid(row=0, column=0, columnspan=2)
         tk.Radiobutton(self.root, text="S", variable=self.letter_choice, value="S").grid(row=1, column=0)
         tk.Radiobutton(self.root, text="O", variable=self.letter_choice, value="O").grid(row=1, column=1)
+
+        tk.Button(self.root, text="Replay Game", command=self.replay_game).grid(row=3, column=4)
 
         tk.Label(self.root, text="Game Mode:").grid(row=2, column=0, columnspan=2)
         self.mode_choice = tk.StringVar(value="simple")
@@ -200,7 +281,7 @@ class Game:
         self.board_size_entry.insert(0, "5")
 
         tk.Button(self.root, text="Start New Game", command=self.start_new_game).grid(row=2, column=2, columnspan=2)
-        
+
         self.status_label = tk.Label(self.root, text="Click a square to fill it",
                                      font=("Helvetica", 14, "bold"), bg="lightblue",
                                      fg="darkblue", pady=10, padx=10, borderwidth=2, relief="groove")
@@ -234,56 +315,61 @@ class Game:
             self.board = Board(self.root, self.board_size, self.board_size, self.on_square_click)
 
 
+
+
     def on_square_click(self, row, col):
-        if self.current_team.is_computer:
-            self.make_computer_move()
+        """
+        Handles clicks on the board squares and ensures proper turn alternation.
+        """
+        if not self.current_team.is_computer:
+            # Handle human player's move
+            self.handle_move(row, col)
+
+            # Check if the game ends after the move
+            if self.check_game_end_conditions():
+                return
+
+            # Switch turn to the computer if necessary
+            self.switch_turn()
         else:
-            square = self.board.get_square(row, col)
-            if square.state == "full":
-                self.status_label.config(text=f"Square ({row}, {col}) is already full")
-            else:
-                selected_letter = self.letter_choice.get()
-                message = square.mark(selected_letter, self.current_team)
-                self.status_label.config(text=message)
+            # If it's the computer's turn (unlikely on click), force a computer move
+            self.make_computer_move()
 
-                score = self.check_sos(row, col, selected_letter)
-                if score:
-                    self.current_team.score += score
-                    self.status_label.config(text=f"{self.current_team.name} scored! {self.current_team.score} points")
-                    if self.game_mode == "simple" and score > 0:
-                        self.end_game(f"{self.current_team.name} wins by making the first SOS!")
-                        return
 
-                if not any(sq.state == "empty" for sq in self.board.squares.values()):
-                    winner = self.get_winner()
-                    self.end_game(f"{winner} wins with Save: {self.team_save.score}, Souls: {self.team_souls.score}!")
-                else:
-                    self.switch_turn()
+    def switch_turn(self):
+        """
+        Switches the turn to the other team and handles computer player logic.
+        """
+        # Alternate between the two teams
+        self.current_team = self.team_souls if self.current_team == self.team_save else self.team_save
+        self.turn_label.config(text=f"Current turn: {self.current_team.name}")
+
+        # If the next team is a computer, make its move
+        if self.current_team.is_computer:
+            self.root.after(500, self.make_computer_move)
+
+
+
+
 
 
     def check_sos(self, row, col, letter):
         score = 0
-        # Define directions to check in each of the eight possible orientations
         directions = [
-            (-1, -1), (-1, 0), (-1, 1),  # Diagonal up-left, vertical up, diagonal up-right
-            (0, -1),         (0, 1),      # Horizontal left, horizontal right
-            (1, -1),  (1, 0), (1, 1)      # Diagonal down-left, vertical down, diagonal down-right
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1)
         ]
 
         for drow, dcol in directions:
-            # Case 1: Current letter is "S" and it's the start of "SOS"
             if (letter == "S" and
                 self.get_letter_at(row + drow, col + dcol) == "O" and
                 self.get_letter_at(row + 2 * drow, col + 2 * dcol) == "S"):
                 score += 1
-
-            # Case 2: Current letter is "O" and it's the middle of "SOS"
             if (letter == "O" and
                 self.get_letter_at(row - drow, col - dcol) == "S" and
                 self.get_letter_at(row + drow, col + dcol) == "S"):
                 score += 1
-
-            # Case 3: Current letter is "S" and it's the end of "SOS"
             if (letter == "S" and
                 self.get_letter_at(row - 2 * drow, col - 2 * dcol) == "S" and
                 self.get_letter_at(row - drow, col - dcol) == "O"):
@@ -291,31 +377,9 @@ class Game:
 
         return score
 
-    # Helper function to safely get the letter at a given position
     def get_letter_at(self, row, col):
         square = self.board.get_square(row, col)
         return square.button["text"] if square and square.state == "full" else None
-
-
-
-
-
-
-
-
-    def check_line(self, row, col, letter, offset1, offset2):
-        def get_square_content(r, c):
-            sq = self.board.get_square(r, c)
-            return sq.button["text"] if sq else None
-
-        # "S" at start, "O" in middle, "S" at end (SOS)
-        if letter == "O":
-            return (get_square_content(row + offset1[0], col + offset1[1]) == "S" and
-                    get_square_content(row + offset2[0], col + offset2[1]) == "S")
-        elif letter == "S":
-            return (get_square_content(row + offset1[0], col + offset1[1]) == "O" and
-                    get_square_content(row - offset1[0], col - offset1[1]) == "S")
-        return False
 
     def get_winner(self):
         if self.team_save.score > self.team_souls.score:
@@ -325,19 +389,6 @@ class Game:
         return "It's a tie!"
 
 
-    def end_game(self, message):
-        messagebox.showinfo("Game Over", message)
-        self.start_new_game()
-
-
-    def switch_turn(self):
-        self.current_team = self.team_souls if self.current_team == self.team_save else self.team_save
-        self.turn_label.config(text=f"Current turn: {self.current_team.name}")
-
-
-
-
-# Start the Tkinter event loop
 root = tk.Tk()
 game = Game(root)
 root.mainloop()
